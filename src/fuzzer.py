@@ -54,6 +54,28 @@ def string_fuzzer(iter,file_name):
 		if(result !=0):
 			crash_data.append(result)
 
+def mutate_chunk(byte_stream):
+	chunk_size = len(byte_stream)
+	changed_chunk = list()
+	for i in range(chunk_size):
+		option = ord(os.urandom(1)) % 4
+		changed_chunk.append(byte_stream[i])
+		if(option == 0):
+			changed_chunk.append(os.urandom(1))
+		elif(option == 1):
+			changed_chunk.pop(len(changed_chunk)-1)
+		elif(option == 2):
+			changed_chunk.pop(len(changed_chunk) - 1)
+			changed_chunk.append(byte_stream[os.urandom(1)%len(byte_stream)])
+		else:
+			if(i+2 < len(byte_stream)):
+				temp =byte_stream[i+1]
+				byte_stream[i+1]=byte_stream[i+2]
+				byte_stream[i+2]=temp
+				changed_chunk.append(byte_stream[i+1])
+				i=i+1
+
+
 def main():
 	if (sys.argv[1] == "int"):
 		int_fuzzer(100,sys.argv[2])
