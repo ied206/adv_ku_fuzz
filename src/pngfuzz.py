@@ -1,23 +1,32 @@
+#!/usr/bin/env python3
+
 import os
 import sys
 import zlib
 import struct
 import random
 import subprocess
+import signal
+try:
+    import src.config as conf
+except ModuleNotFoundError:
+    import config as conf
 
 
 MODE_LENGTH = 0
 MODE_CHUNK_TYPE = 1
 MODE_CHUNK_DATA_VALID_CRC = 2
 MODE_CHUNK_DATA_INVALID_CRC = 3
-MODE_CRC = 4
+MODE_CHUNK_DATA_VALID_CRC_PRESERVE_LENGTH = 4
+MODE_CHUNK_TYPE_DATA_VALID_CRC_PRESERVE_LENGTH = 5
+MODE_CRC = 10
 
 
-def png_fuzz(seed, mode):
+def png_fuzz(seed, fileout, mode):
     with open(seed, 'rb') as f:
         buf = f.read()
 
-    with open('bomb.png', 'wb') as f:
+    with open(fileout, 'wb') as f:
         f.write(buf[0:8])
         idx = 8  # PNG Header is 8 byte - 89 50 4E 47 0D 0A 1A 0A
         while idx < len(buf):
@@ -35,6 +44,11 @@ def png_fuzz(seed, mode):
                 crc32 = calc_crc32(chunk_data)
             elif mode == MODE_CHUNK_DATA_INVALID_CRC:
                 chunk_data = mutate_chunk(tup[3])
+            elif mode == MODE_CHUNK_DATA_VALID_CRC_PRESERVE_LENGTH:
+                chunk_data = mutate_chunk_preserve_length(tup[3])
+            elif mode == MODE_CHUNK_TYPE_DATA_VALID_CRC_PRESERVE_LENGTH:
+                chunk_type = mutate_chunk_type(tup[2])
+                chunk_data = mutate_chunk_preserve_length(tup[3])
             else:
                 crc32 = mutate_crc(tup[3])
             idx = tup[0]
@@ -86,37 +100,48 @@ def mutate_chunk_type(chunk_type):
     이 함수에선 청크의 5번째 bit를 조절한다.
     """
     for i in range(4):
+        new_type = []
         action = random.SystemRandom().randint(0, 5)
         if action == 0:
-            chunk_type[i] = chunk_type[i] & 0x11101111  # 20% = Set to Uppercase
+            new_type.append(bytes([chunk_type[i] & int('11101111', 2)]))  # 20% = Set to Uppercase
         elif action == 1:
-            chunk_type[i] = chunk_type[i] | 0x00010000  # 20% = Set to Lowercase
+            new_type.append(bytes([chunk_type[i] | int('00010000', 2)]))  # 20% = Set to Lowercase
         # 60% = do nothing
-    return chunk_type
+    return b''.join(new_type)
 
 
 def mutate_chunk(chunk_data):
-    new_chunk = {}
+    new_chunk = []
     data_idx = 0
-    new_idx = 0
-    action = random.SystemRandom().randint(1, 1000)
+    action = random.SystemRandom().randint(1, 100)
     while data_idx < len(chunk_data):
-        if 0 < action <= 20:  # mutate
-            new_chunk[new_idx] = ord(random.SystemRandom().randint(0, 255))
+        if 0 < action <= 10:  # mutate
+            new_chunk.append(bytes([random.SystemRandom().randint(0, 255)]))
             data_idx += 1
-            new_idx += 1
-        elif 20 < action <= 22:  # Insert
-            new_chunk[new_idx] = chunk_data[data_idx]
-            new_chunk[new_idx + 1] = ord(random.SystemRandom().randint(0, 255))
+        elif 10 < action <= 20:  # Insert
+            new_chunk.append(bytes([chunk_data[data_idx]]))
+            new_chunk.append(bytes([random.SystemRandom().randint(0, 255)]))
             data_idx += 1
-            new_idx += 2
-        elif 22 < action <= 24:  # Drop
+        elif 20 < action <= 30:  # Drop
             data_idx += 1
         else:
-            new_chunk[new_idx] = chunk_data[data_idx]
+            new_chunk.append(bytes([chunk_data[data_idx]]))
             data_idx += 1
-            new_idx += 1
-    return new_chunk
+    return b''.join(new_chunk)
+
+
+def mutate_chunk_preserve_length(chunk_data):
+    new_chunk = []
+    data_idx = 0
+    action = random.SystemRandom().randint(1, 100)
+    while data_idx < len(chunk_data):
+        if 0 < action <= 5:  # mutate
+            new_chunk.append(bytes([random.SystemRandom().randint(0, 255)]))
+            data_idx += 1
+        else:
+            new_chunk.append(bytes([chunk_data[data_idx]]))
+            data_idx += 1
+    return b''.join(new_chunk)
 
 
 def calc_crc32(chunk_data):
@@ -132,33 +157,51 @@ def mutate_crc(chunk_data):
     for i in range(4):
         action = random.SystemRandom().randint(0, 1)
         if action == 0:
-            crc32_bytes[i] = ord(random.SystemRandom().randint(0, 255))
+            crc32_bytes[i] = bytes([random.SystemRandom().randint(0, 255)])
 
     return crc32_bytes
 
 
 def uint32_to_bytes(uint32):
-    #converted_bytes = [
-    #    uint32 / (0x100 * 0x100 * 0x100),
-    #    uint32 / (0x100 * 0x100),
-    #    uint32 / 0x100,
-    #    uint32 % 0x100,
-    #]
     return uint32.to_bytes(4, byteorder='big')
 
 
+def driver(exe_path, src_file, iteration):
+    os.makedirs(os.path.abspath('gen'), exist_ok=True)
+    with open('log.txt', 'w') as f:
+        for i in range(iteration):
+            fileout = os.path.abspath('gen/bomb{}.png'.format(i))
+            png_fuzz(src_file, fileout, MODE_CHUNK_DATA_VALID_CRC_PRESERVE_LENGTH)
+            command = '{} \"{}\"'.format(exe_path, fileout)
+            try:
+                # result = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True)
+                # result = subprocess.Popen(command, stderr=subprocess.STDOUT, shell=True)
+                proc = subprocess.Popen(command, stderr=subprocess.STDOUT, shell=True)
+                out, err = proc.communicate(timeout=1)
+                msg = "[{}] Crash {}".format(i, os.path.basename(fileout))
+                print(msg)
+                f.write(msg)
+                f.write('\n')
+            except subprocess.TimeoutExpired:
+                # os.kill(proc.pid, signal.SIGINT)
+                # os.system("taskkill /pid {} /f".format(proc.pid))   # Windows용 임시방편
+                os.system("taskkill /f /im {} > NUL".format(os.path.basename(conf.EXECUTABLE_PATH)))  # Windows용 임시방편
+                msg = "[{}] Failure {}".format(i, os.path.basename(fileout))
+                print(msg)
+                f.write(msg)
+                f.write('\n')
+            except subprocess.CalledProcessError as e:
+                msg = "[{}] Error: {} {}".format(i, e, os.path.basename(fileout))
+                print(msg)
+                f.write(msg)
+                f.write('\n')
+
+
 def main():
-    exe_path = '\"C:\Program Files\Honeyview\Honeyview.exe\"'
-    png_fuzz('seed.png', MODE_LENGTH)
-    command = '{} {}'.format(exe_path, 'bomb.png')
-    try:
-        # result = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True)
-        # result = subprocess.Popen(command, stderr=subprocess.STDOUT, shell=True)
-        proc = subprocess.Popen(command,  stderr=subprocess.STDOUT, shell=True)
-        out, err = proc.communicate()
-        print(out, err, proc.returncode)
-    except subprocess.CalledProcessError as e:
-        print("Error:", e)
+    exe_path = conf.EXECUTABLE_PATH
+    src_file = conf.SOURCE_FILE
+    iteration = conf.ITERATION
+    driver(exe_path, src_file, iteration)
 
 
 if __name__ == '__main__':
