@@ -16,13 +16,13 @@ except ModuleNotFoundError:
 MODE_LENGTH = 0
 MODE_CHUNK_TYPE = 1
 MODE_CHUNK_DATA_VALID_CRC = 2
-MODE_CHUNK_DATA_INVALID_CRC = 3
-MODE_CHUNK_DATA_VALID_CRC_PRESERVE_LENGTH = 4
-MODE_CHUNK_TYPE_DATA_VALID_CRC_PRESERVE_LENGTH = 5
-MODE_CRC = 10
+MODE_CHUNK_DATA_VALID_CRC_PRESERVE_LENGTH = 3
+MODE_CHUNK_TYPE_DATA_VALID_CRC_PRESERVE_LENGTH = 4
+MODE_CHUNK_DATA_INVALID_CRC = 5
+MODE_CRC = 6
 
 
-def png_fuzz(seed, fileout, mode):
+def png_fuzz(seed, fileout):
     with open(seed, 'rb') as f:
         buf = f.read()
 
@@ -30,6 +30,8 @@ def png_fuzz(seed, fileout, mode):
         f.write(buf[0:8])
         idx = 8  # PNG Header is 8 byte - 89 50 4E 47 0D 0A 1A 0A
         while idx < len(buf):
+            mode = random.SystemRandom().randint(0, 4)
+
             tup = get_png_next_chunk(buf, idx)
             length = tup[1]
             chunk_type = tup[2]
@@ -154,12 +156,13 @@ def mutate_crc(chunk_data):
     crc32_uint32 = zlib.crc32(chunk_data)
     crc32_bytes = uint32_to_bytes(crc32_uint32)
 
+    new_crc32 = []
     for i in range(4):
         action = random.SystemRandom().randint(0, 1)
         if action == 0:
-            crc32_bytes[i] = bytes([random.SystemRandom().randint(0, 255)])
+            new_crc32.append(bytes([random.SystemRandom().randint(0, 255)]))
 
-    return crc32_bytes
+    return b''.join(new_crc32)
 
 
 def uint32_to_bytes(uint32):
@@ -171,30 +174,30 @@ def driver(exe_path, src_file, iteration):
     with open('log.txt', 'w') as f:
         for i in range(iteration):
             fileout = os.path.abspath('gen/bomb{}.png'.format(i))
-            png_fuzz(src_file, fileout, MODE_CHUNK_DATA_VALID_CRC_PRESERVE_LENGTH)
+            png_fuzz(src_file, fileout)
             command = '{} \"{}\"'.format(exe_path, fileout)
             try:
-                # result = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True)
-                # result = subprocess.Popen(command, stderr=subprocess.STDOUT, shell=True)
                 proc = subprocess.Popen(command, stderr=subprocess.STDOUT, shell=True)
                 out, err = proc.communicate(timeout=1)
                 msg = "[{}] Crash {}".format(i, os.path.basename(fileout))
                 print(msg)
                 f.write(msg)
                 f.write('\n')
+                f.flush()
             except subprocess.TimeoutExpired:
                 # os.kill(proc.pid, signal.SIGINT)
-                # os.system("taskkill /pid {} /f".format(proc.pid))   # Windows용 임시방편
-                os.system("taskkill /f /im {} > NUL".format(os.path.basename(conf.EXECUTABLE_PATH)))  # Windows용 임시방편
+                os.system("taskkill /f /im {}".format(os.path.basename(conf.EXECUTABLE_PATH)))  # Windows용 임시방편
                 msg = "[{}] Failure {}".format(i, os.path.basename(fileout))
                 print(msg)
                 f.write(msg)
                 f.write('\n')
+                f.flush()
             except subprocess.CalledProcessError as e:
                 msg = "[{}] Error: {} {}".format(i, e, os.path.basename(fileout))
                 print(msg)
                 f.write(msg)
                 f.write('\n')
+                f.flush()
 
 
 def main():
